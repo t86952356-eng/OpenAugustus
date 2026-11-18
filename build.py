@@ -4,6 +4,13 @@ import argparse, datetime, hashlib, json, os, shutil, struct, subprocess, sys, t
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
+PATHSEP = os.pathsep
+EXE = '.exe' if os.name == 'nt' else ''
+TOOL_MEM = os.environ.get('AUGUSTUS_TOOL_MEM', '3200m')
+JAVAC_MEM = os.environ.get('AUGUSTUS_JAVAC_MEM', '3200m')
+VERIFY_MEM = os.environ.get('AUGUSTUS_VERIFY_MEM', '2400m')
+DEBUG_INFO = os.environ.get('AUGUSTUS_JAVAC_DEBUG', '')  # e.g. 'none' for -g:none
+
 LIBRARY_PREFIXES = (
     'com/', 'io/', 'it/', 'org/', 'oshi/', 'paulscode/', 'ibxm/',
     'joptsimple/', 'de/', 'club/', 'tv/', 'dev/', 'launcher/',
@@ -34,11 +41,14 @@ def resolve_jdk17(explicit, root):
         Path(r'C:\Program Files\BellSoft'),
         Path(r'C:\Program Files\Amazon Corretto'),
         Path(r'C:\Program Files\Microsoft'),
+        Path('/usr/lib/jvm'),
+        Path('/opt/java'),
+        Path('/usr/java'),
     ):
         if parent.is_dir():
             candidates.extend(sorted(parent.glob('*17*'), reverse=True))
     for cand in candidates:
-        if (cand / 'bin/java.exe').is_file() and (cand / 'bin/javac.exe').is_file():
+        if (cand / ('bin/java' + EXE)).is_file() and (cand / ('bin/javac' + EXE)).is_file():
             return cand
     return Path(explicit) if explicit else (root / 'build-tools/jdk17')
 
@@ -56,14 +66,18 @@ def resolve_java8(explicit, root):
         Path(r'C:\Program Files\Zulu'),
         Path(r'C:\Program Files\BellSoft'),
         Path(r'C:\Program Files\Amazon Corretto'),
+        Path('/usr/lib/jvm'),
+        Path('/opt/java'),
+        Path('/usr/java'),
     ):
         if parent.is_dir():
             candidates.extend(sorted(parent.glob('*1.8*'), reverse=True))
             candidates.extend(sorted(parent.glob('*8*'), reverse=True))
+            candidates.extend(sorted(parent.glob('temurin-8*'), reverse=True))
     if os.environ.get('JAVA_HOME'):
         candidates.append(Path(os.environ['JAVA_HOME']))
     for cand in candidates:
-        if (cand / 'bin/java.exe').is_file() and ((cand / 'lib/rt.jar').is_file() or (cand / 'jre/lib/rt.jar').is_file()):
+        if (cand / ('bin/java' + EXE)).is_file() and ((cand / 'lib/rt.jar').is_file() or (cand / 'jre/lib/rt.jar').is_file()):
             return cand
     return Path(explicit) if explicit else (root / 'build-tools/java8')
 
@@ -142,10 +156,10 @@ sys.path.insert(0, str(root / 'tools'))
 from build_inputs import restore_inputs
 restore_inputs(root)
 
-java = jdk / 'bin/java.exe'
-javac = jdk / 'bin/javac.exe'
-java8 = java8_home / 'bin/java.exe'
-javac8 = java8_home / 'bin/javac.exe'
+java = jdk / ('bin/java' + EXE)
+javac = jdk / ('bin/javac' + EXE)
+java8 = java8_home / ('bin/java' + EXE)
+javac8 = java8_home / ('bin/javac' + EXE)
 java8_lib = (java8_home / 'lib') if (java8_home / 'lib/rt.jar').is_file() else (java8_home / 'jre/lib')
 java8_rt = java8_lib / 'rt.jar'
 jfxrt_jar = root / 'lib/runtime/javafx8/lib/ext/jfxrt.jar'
@@ -173,7 +187,7 @@ for part in ['tools', 'headers-readable', 'compiled-all', 'core', 'support', 'mo
     (build / part).mkdir()
 
 asm = sorted((root / 'lib/asm').glob('*.jar'))
-toolcp = ';'.join(map(str, [build / 'tools', *asm]))
+toolcp = PATHSEP.join(map(str, [build / 'tools', *asm]))
 
 captured_compile_headers = root / 'lib/captured-compile-headers.jar'
 captured_runtime_types = root / 'lib/captured-runtime-types.jar'
@@ -192,9 +206,9 @@ readable_headers = [build / 'headers-readable' / h.name for h in legacy_headers]
 def run(label, *command):
     command = list(map(str, command))
     exe = Path(command[0]).name.lower()
-    if exe == 'javac.exe':
+    if exe in ('javac.exe', 'javac'):
         command[1:1] = ['-J-Duser.language=en', '-J-Dfile.encoding=UTF-8']
-    elif exe == 'java.exe':
+    elif exe in ('java.exe', 'java'):
         command[1:1] = ['-Duser.language=en', '-Dfile.encoding=UTF-8']
     with (build / 'logs' / (label + '.log')).open('w', encoding='utf-8') as log:
         done = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
@@ -204,7 +218,7 @@ def run(label, *command):
 
 
 def tool(label, name, *params):
-    run(label, java, '-Xmx3200m', '-cp', toolcp, name, *params)
+    run(label, java, '-Xmx' + TOOL_MEM, '-cp', toolcp, name, *params)
 
 
 def jar_classes(path, directory, identities=None):
@@ -267,9 +281,9 @@ if captured_runtime_types.exists():
     analysis_core = build / 'analysis-original-core.jar'
     write_jar(analysis_core, analysis_types)
 
-hierarchy_jars = ';'.join(map(str, [*legacy_headers, root / 'lib/retained-templates.jar', filtered_lib_headers, jfxrt_jar]))
+hierarchy_jars = PATHSEP.join(map(str, [*legacy_headers, root / 'lib/retained-templates.jar', filtered_lib_headers, jfxrt_jar]))
 
-run('tools', javac, '--release', '8', '-encoding', 'UTF-8', '-proc:none', '-cp', ';'.join(map(str, asm)), '-d', build / 'tools', *sorted((root / 'tools').glob('*.java')))
+run('tools', javac, '--release', '8', '-encoding', 'UTF-8', '-proc:none', '-cp', PATHSEP.join(map(str, asm)), '-d', build / 'tools', *sorted((root / 'tools').glob('*.java')))
 tool(
     'headers-forward', 'ReadableNamespaceMapper', 'forward',
     root / 'tools/readable-symbols.tsv',
@@ -297,8 +311,9 @@ else:
     run(
         'runtime', javac,
         '-source', '8', '-target', '8', '-XDignore.symbol.file',
-        '-bootclasspath', ';'.join(boot_jars),
+        '-bootclasspath', PATHSEP.join(boot_jars),
         '-encoding', 'UTF-8', '-proc:none',
+        *(['-g:' + DEBUG_INFO] if DEBUG_INFO else []),
         '-d', build / 'runtime',
         *runtime_sources,
     )
@@ -339,7 +354,7 @@ for row in manifest:
         uncached_module_sources.append(root / 'src/main/java' / (row['readable_class'] + '.java'))
 
 all_batch_sources = [*core_sources, *support_sources, *uncached_module_sources]
-sourcecp = ';'.join(map(str, [build / 'modules', build / 'runtime', synth_compile_headers, filtered_lib_headers, jfxrt_jar, *readable_headers]))
+sourcecp = PATHSEP.join(map(str, [build / 'modules', build / 'runtime', synth_compile_headers, filtered_lib_headers, jfxrt_jar, *readable_headers]))
 
 if all_batch_sources:
     argfile = build / 'javac-sources.argfile'
@@ -354,8 +369,9 @@ if all_batch_sources:
     )
     run(
         'compile-all', javac,
-        '-J-Xmx3200m', '-J-Xss16m',
+        '-J-Xmx' + JAVAC_MEM, '-J-Xss16m',
         '--release', '8', '-encoding', 'UTF-8', '-proc:none',
+        *(['-g:' + DEBUG_INFO] if DEBUG_INFO else []),
         '-cp', sourcecp,
         '-d', build / 'compiled-all',
         '@' + str(argfile),
@@ -480,7 +496,7 @@ for name, data in read_jar(root / 'lib/base-runtime-overlay.jar').items():
 write_jar(dist / 'compiled-source-overlay.jar', framed)
 
 run(
-    'jvm', java8, '-Xverify:all', '-Xmx2400m', '-cp', toolcp, 'TestBatchJvmVerification',
+    'jvm', java8, '-Xverify:all', '-Xmx' + VERIFY_MEM, '-cp', toolcp, 'TestBatchJvmVerification',
     filtered_lib_headers, jfxrt_jar, analysis_headers_only, recovered_analysis,
     root / 'lib/runtime-additions.jar', analysis_core,
     dist / 'compiled-source-overlay.jar', build / 'jvm-approved.jar', dist / 'jvm.tsv',

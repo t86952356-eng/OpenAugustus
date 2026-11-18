@@ -29,6 +29,14 @@ public class DebugConsoleJFrame extends JFrame {
 
    private static void updateState3() {
       try {
+         // Android port: never construct Swing frames on headless JVMs (Android launchers).
+         // The HeadlessException path below already handled this, but probing first avoids
+         // depending on which exact exception each look-and-feel throws.
+         if (java.awt.GraphicsEnvironment.isHeadless()) {
+            enabled2 = true;
+            MoreCosmeticsManager.applyText("Failed to open console! Running headless.");
+            return;
+         }
          UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
          debugConsoleJFrame = new DebugConsoleJFrame();
          debugConsoleJFrame.updateState4();

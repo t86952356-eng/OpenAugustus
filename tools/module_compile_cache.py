@@ -12,7 +12,7 @@ class ModuleCompileCache:
     def __init__(self,root,build,jdk,manifest,headers,previous_report=None):
         self.root=Path(root);self.build=Path(build);self.rows=manifest;self.lock=threading.Lock();self.reused=0;self.entries={};self.previous_sources={};self.held=None
         inputs={}
-        for path in [self.root/'build.py',Path(__file__),Path(jdk)/'bin/javac.exe',Path(jdk)/'lib/modules',Path(jdk)/'release',*headers]:
+        for path in [self.root/'build.py',Path(__file__),Path(jdk)/('bin/javac' + ('.exe' if __import__('os').name == 'nt' else '')),Path(jdk)/'lib/modules',Path(jdk)/'release',*headers]:
             inputs[str(Path(path).resolve())]=file_hash(path)
         for path in sorted((self.build/'support').rglob('*.class')):inputs['support/'+path.relative_to(self.build/'support').as_posix()]=file_hash(path)
         inputs['javac_flags']=['--release','8','-encoding','UTF-8','-proc:none','-J-Xmx1100m','-J-Xss16m','-J-Duser.language=en','-J-Dfile.encoding=UTF-8']

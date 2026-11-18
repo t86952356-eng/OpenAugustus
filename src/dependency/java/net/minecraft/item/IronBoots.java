@@ -12,9 +12,13 @@ public class IronBoots extends ListenerAdapter10 {
 
    @Override
    public JsonElement getJsonElement() {
-      return (JsonElement)(this.postMotionObserver instanceof ExtendedListenerController
-         ? new JsonPrimitive(this.postMotionObserver.getValue())
-         : super.getJsonElement());
+      // Android port: rewritten from a cast ternary to if/else - javac 17.0.21 emitted an
+      // Object StackMapTable frame for the ternary merge point, which fails HotSpot
+      // -Xverify:all ("Bad return type" VerifyError on net/47bX). Identical semantics.
+      if (this.postMotionObserver instanceof ExtendedListenerController) {
+         return new JsonPrimitive(this.postMotionObserver.getValue());
+      }
+      return super.getJsonElement();
    }
 
    @Override

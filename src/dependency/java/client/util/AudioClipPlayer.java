@@ -4,26 +4,45 @@ import client.Client;
 import javafx.scene.media.AudioClip;
 
 public class AudioClipPlayer {
+   // Android port: JavaFX (javafx.scene.media.AudioClip) is only present in Oracle-style
+   // Java 8 builds that bundle OpenJFX. Android launchers run Temurin-style JRE 8 without
+   // JavaFX, so every JavaFX call is guarded and the music player degrades to silent
+   // no-ops instead of dying with NoClassDefFoundError. Desktop behavior is unchanged.
+   private static final boolean AUDIO_SUPPORTED;
+
+   static {
+      boolean supported = false;
+      try {
+         Class.forName("javafx.scene.media.AudioClip", false, AudioClipPlayer.class.getClassLoader());
+         supported = true;
+      } catch (Throwable throwable) {
+         System.err.println("[android] JavaFX audio unavailable - music player disabled");
+      }
+      AUDIO_SUPPORTED = supported;
+   }
+
    public AudioClip audioClip = null;
 
    public void applyDouble(double offset) {
-      if (this.checkCondition()) {
+      if (AUDIO_SUPPORTED && this.checkCondition()) {
          this.audioClip.setVolume(offset);
       }
    }
 
    public void applyText(String text) {
+      if (!AUDIO_SUPPORTED) return;
       this.audioClip = new AudioClip(ConfigManager.resolveText(text));
       this.audioClip.play();
    }
 
    public void processAction(int count) {
-      if (this.audioClip != null) {
+      if (AUDIO_SUPPORTED && this.audioClip != null) {
          this.audioClip.setCycleCount(count);
       }
    }
 
    public void applyString2(String text, boolean flag) {
+      if (!AUDIO_SUPPORTED) return;
       String text2 = text;
       if (text.startsWith("assets/augustus/")) {
          text2 = text.replace("assets/augustus/", "");
@@ -44,7 +63,7 @@ public class AudioClipPlayer {
    }
 
    public boolean checkCondition() {
-      return this.audioClip != null && this.audioClip.isPlaying();
+      return AUDIO_SUPPORTED && this.audioClip != null && this.audioClip.isPlaying();
    }
 
    public void processChar() {

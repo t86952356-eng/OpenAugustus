@@ -1,0 +1,115 @@
+name: Build Android Client
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CLIENT_ID: OpenAugustus-Android-b4.20.3
+  JAR_NAME: OpenAugustus-Android-b4.20.3.jar
+  JSON_NAME: OpenAugustus-Android-b4.20.3.json
+  TAG: android-b4.20.3
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up JDK 17 (build toolchain)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up JDK 8 (HotSpot -Xverify:all verification + smoke tests)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Show toolchain
+        run: |
+          python3 --version
+          java -version 2>&1
+          javac -version
+          ls /usr/lib/jvm 2>/dev/null || true
+
+      - name: Build client from clean source (javac --release 8, -g:none)
+        env:
+          AUGUSTUS_JAVAC_DEBUG: none
+        run: |
+          echo "JAVA_HOME_17_X64=${JAVA_HOME_17_X64}"
+          echo "JAVA_HOME_8_X64=${JAVA_HOME_8_X64}"
+          python3 build.py \
+            --jdk17 "${JAVA_HOME_17_X64}" \
+            --java8 "${JAVA_HOME_8_X64}"
+
+      - name: Verify upstream build gates (fingerprints, CRC, JVM8 verification, IRC removal)
+        run: python3 verify.py
+
+      - name: Package slim Android jar (dedup + natives removal, gated)
+        run: |
+          python3 android/package_android.py \
+            --input dist/Augustus-source-development.jar \
+            --output "dist/${JAR_NAME}" \
+            --report dist/android-package-report.json
+
+      - name: Smoke test - Android jar structural probe (Java 8, jar-only classpath)
+        run: |
+          mkdir -p build/probe
+          javac -source 8 -target 8 -encoding UTF-8 -cp "dist/${JAR_NAME}" \
+            -d build/probe android/ProbeAugustus.java
+          "${JAVA_HOME_8_X64}/bin/java" -Dprobe.jar="$(pwd)/dist/${JAR_NAME}" \
+            -cp "build/probe:dist/${JAR_NAME}" ProbeAugustus
+
+      - name: Generate version JSON (FCL Client Version manifest)
+        run: |
+          python3 android/generate_version_json.py \
+            --jar "dist/${JAR_NAME}" \
+            --client-url "https://github.com/${{ github.repository }}/releases/download/${TAG}/${JAR_NAME}" \
+            --id "${CLIENT_ID}" \
+            --out "dist/${JSON_NAME}"
+          cat "dist/${JSON_NAME}"
+
+      - name: Copy install guide
+        run: cp android/RELEASE_NOTES.md dist/INSTALL-FCL.md
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenAugustus-Android-b4.20.3
+          path: dist/
+          if-no-files-found: error
+
+      - name: Delete previous release (if any)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ env.TAG }}
+        run: |
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ env.TAG }}
+        run: |
+          gh release create "$TAG" \
+            --title "OpenAugustus b4.20.3 - Android Client Version (FCL + GL4ES / Krypton)" \
+            --notes-file android/RELEASE_NOTES.md \
+            "dist/${JAR_NAME}" \
+            "dist/${JSON_NAME}" \
+            "dist/INSTALL-FCL.md" \
+            "dist/android-package-report.json"

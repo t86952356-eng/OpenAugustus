@@ -52,15 +52,23 @@ public final class Libraries {
     public static void create() {
         try {
             Path dir = Libraries.deleteOnExit(Files.createTempDirectory("augustus_natives"));
+            // Android port: natives are optional. The Android build ships no bundled
+            // natives (the launcher - FCL/Pojav - supplies its own lwjgl/openal stack for
+            // the running platform), so missing entries are skipped instead of failing.
+            int extracted = 0;
             for (String lib : LIBS) {
-                try (InputStream stream = Objects.requireNonNull(
-                        Libraries.class.getClassLoader().getResourceAsStream("natives/".concat(lib)))) {
+                InputStream stream = Libraries.class.getClassLoader().getResourceAsStream("natives/".concat(lib));
+                if (stream == null) continue;
+                try (InputStream in = stream) {
                     Path out = Libraries.deleteOnExit(dir.resolve(lib));
                     Files.deleteIfExists(out);
-                    Files.copy(stream, out);
+                    Files.copy(in, out);
+                    extracted++;
                 }
             }
-            Libraries.rebuild(dir);
+            if (extracted > 0) {
+                Libraries.rebuild(dir);
+            }
         } catch (Throwable error) {
             throw new RuntimeException(error);
         }
