@@ -74,7 +74,14 @@ jobs:
           mkdir -p build/probe
           javac -source 8 -target 8 -encoding UTF-8 -cp "dist/${JAR_NAME}" \
             -d build/probe android/ProbeAugustus.java
+          # -Duser.home: on linux the client writes "<user.home>\AppData\..." as a
+          # single file name; with the default HOME=/home/runner that resolves to a
+          # file inside the root-owned /home (AccessDenied). On a real Android
+          # device user.home is inside the launcher's writable storage, so this is
+          # a CI-only quirk - give the probe a home whose parent is writable.
+          mkdir -p /tmp/augustus-probe-home
           "${JAVA_HOME_8_X64}/bin/java" -Xmx1G \
+            -Duser.home=/tmp/augustus-probe-home \
             -Dprobe.jar="$(pwd)/dist/${JAR_NAME}" \
             -cp "build/probe:dist/${JAR_NAME}" ProbeAugustus
 
