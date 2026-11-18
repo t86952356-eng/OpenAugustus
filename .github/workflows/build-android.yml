@@ -9,10 +9,10 @@ permissions:
   contents: write
 
 env:
-  CLIENT_ID: OpenAugustus-Android-b4.20.3
-  JAR_NAME: OpenAugustus-Android-b4.20.3.jar
-  JSON_NAME: OpenAugustus-Android-b4.20.3.json
-  TAG: android-b4.20.3
+  CLIENT_ID: OpenAugustus-Android-b4.20.4
+  JAR_NAME: OpenAugustus-Android-b4.20.4.jar
+  JSON_NAME: OpenAugustus-Android-b4.20.4.json
+  TAG: android-b4.20.4
 
 jobs:
   build:
@@ -28,7 +28,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Set up JDK 17 (build toolchain)
+      - name: Set up JDK 17 (build toolchain + ASM patcher)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -60,19 +60,22 @@ jobs:
       - name: Verify upstream build gates (fingerprints, CRC, JVM8 verification, IRC removal)
         run: python3 verify.py
 
-      - name: Package slim Android jar (dedup + natives removal, gated)
+      - name: Package slim Android jar (dedup + Android bootstrap fixes, gated)
         run: |
           python3 android/package_android.py \
             --input dist/Augustus-source-development.jar \
             --output "dist/${JAR_NAME}" \
-            --report dist/android-package-report.json
+            --report dist/android-package-report.json \
+            --jdk17 "${JAVA_HOME_17_X64}" \
+            --asm-cp "lib/asm/asm-9.7.1.jar:lib/asm/asm-tree-9.7.1.jar:lib/asm/asm-commons-9.7.1.jar:lib/asm/asm-analysis-9.7.1.jar:lib/asm/asm-util-9.7.1.jar"
 
-      - name: Smoke test - Android jar structural probe (Java 8, jar-only classpath)
+      - name: Smoke test - structural probe + full launcher chain (Java 8, jar-only classpath)
         run: |
           mkdir -p build/probe
           javac -source 8 -target 8 -encoding UTF-8 -cp "dist/${JAR_NAME}" \
             -d build/probe android/ProbeAugustus.java
-          "${JAVA_HOME_8_X64}/bin/java" -Dprobe.jar="$(pwd)/dist/${JAR_NAME}" \
+          "${JAVA_HOME_8_X64}/bin/java" -Xmx1G \
+            -Dprobe.jar="$(pwd)/dist/${JAR_NAME}" \
             -cp "build/probe:dist/${JAR_NAME}" ProbeAugustus
 
       - name: Generate version JSON (FCL Client Version manifest)
@@ -90,7 +93,7 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OpenAugustus-Android-b4.20.3
+          name: OpenAugustus-Android-b4.20.4
           path: dist/
           if-no-files-found: error
 
@@ -107,7 +110,7 @@ jobs:
           TAG: ${{ env.TAG }}
         run: |
           gh release create "$TAG" \
-            --title "OpenAugustus b4.20.3 - Android Client Version (FCL + GL4ES / Krypton)" \
+            --title "OpenAugustus b4.20.4 - Android Client Version (launcher crash fix + documented native wall)" \
             --notes-file android/RELEASE_NOTES.md \
             "dist/${JAR_NAME}" \
             "dist/${JSON_NAME}" \

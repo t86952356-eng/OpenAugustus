@@ -91,3 +91,85 @@ java -jar OpenAugustus-Android-b4.20.3.jar
 - استبعاد كلاسات المكتبات المطابقة بايت-ببايت لمكتبات فانيلا 1.8.9 من classes.bin (مع inheritsFrom + fallback للـ classpath) — قد يوفر ~20-30 MB إضافية.
 - تجريد LineNumberTable من كلاسات المكتبات (35,898) — ~8-10 MB مقابل وقت بناء أطول.
 - إعادة ضغط أصوات OGG بمعدل بت أقل — **مرفوض حالياً** (يغير الأصول الصوتية).
+
+## 9. إصلاح كراش الإقلاع على الجهاز (b4.20.4) — التشريح الكامل
+
+### الكراش (تقرير FCL من جهاز حقيقي — Infinix X6833B / MT6789 / Holy-GL4ES)
+
+```
+java.lang.reflect.InvocationTargetException
+	at mio.Wrapper.main(Wrapper.java:21)
+Caused by: java.lang.UnsatisfiedLinkError: Platform not supported: linux/aarch64
+	at dev.jnic.rNBrJa.JNICLoader.<clinit>(Unknown Source)
+	at launcher.41.<clinit>(41.java)
+	at sun.misc.Unsafe.ensureClassInitialized(Native Method)
+	at nick.Augustus.main(Augustus.java:26)
+```
+
+### التتبع الجنائي (أدلة bytecode — لا تخمين)
+
+1. **حمولة JNIC ويندوز فقط**: تفكيك `<clinit>` الخاص بـ
+   `dev.jnic.rNBrJa.JNICLoader` (داخل ElectricLauncher.jar) يُظهر فرعاً
+   واحداً فقط: `os.name.contains("win") && (x86_64|amd64)` → استخراج
+   `[0, 1146368)` من `dev/jnic/lib/0ddbcb95-….dat` (مفكوك LZMA عبر
+   JNICLoader نفسه — يرث InputStream) ثم `System.load`. أي منصة أخرى →
+   `start == length == 0` → رمي «Platform not supported».
+2. **خطاف الإقلاع**: `launcher/41.class` (Thread) كتلة ساكنة:
+   `{ JNICLoader.init(); $jnicLoader(); $jnicClinit(); }` — و`$jnicLoader`
+   **native** — أي أن تحييد JNICLoader وحده لا يكفي.
+3. **طبقة حماية ثانية**: كلاسات نواة العميل (الأوفيرلاي الأصلي المحفوظ من
+   base-runtime-overlay — `PRESERVE_BINARY_CLASSES` في build.py) تستورد
+   `dev.jnic.aqRLGH.JNICLoader` (حزمة مختلفة!) — محمّلها يُفك من الحمولات
+   المشفرة في classes.bin وقت التشغيل، ونفس فحص المنصة بداخلها.
+4. **الجدار الثالث**: `launcher.Controller` (يُنشأ في المصافحة عبر
+   `nick.Augustus` سطر 35) يعلن حقول JavaFX (`Text/Button/ListView/...`)
+   و`Class.getDeclaredFields` (آلية ZKM المغلقة) يحل أنواع الحقول **فوراً**
+   → `NoClassDefFoundError: javafx/scene/text/Text` (لا JavaFX في JRE8
+   الخاص بالمشغلات).
+5. **الجدار الرابع — القاتل**: بعد إصلاح كل ما سبق (تحقّق تجريبي كامل على
+   لينكس/JDK8 بإعادة `nick.Augustus.main` حرفياً):
+   - `StartMinecraftDirectory.main` (الأوفيرلاي) يستدعي **`net.47Uj.main`**
+     وهي **native بالكامل** — مُقلع اللعبة الفعلي (`49`/Main المقروء مجرد
+     غلاف يعيد الاستدعاء إلى 47Uj نفسها).
+   - نواة العميل `net.40U` (حاوية الخدمات — `40U.44().45()…` في ~100 كلاس
+     نظيف) و`net.47R3` (ناقل الأحداث) و`net.47Ua` (معالج Netty) و`net.47bj`
+     — كل منطقها native في الحمولة، **لا يوجد لها سورس** (SKIP_BINARY_CLASSES
+     في build.py) ولا نسخة aarch64.
+
+### الاستنتاج المعماري (موثق بأدلة)
+
+كامل سلسلة الإقلاع **قابلة للإصلاح وتُصلحت**؛ أما مُقلع اللعبة ونواة
+العميل فهما منطق native بملفات Windows x64 فقط — تشغيلهما على أندرويد
+يتطلب إعادة هندسة كاملة (مشروع هندسة عكسية)، ولا يوجد أي مسار «إصلاح
+تشغيلي» لهما.
+
+### إصلاحات b4.20.4 (كلها في `android/package_android.py` — ببوابات تحقق)
+
+| الإصلاح | الآلية |
+|---|---|
+| محمّلا JNIC آمنان | `dev/jnic/{rNBrJa,aqRLGH}/JNICLoader` stubs ذاتية الاحتواء (تخصيص `z` + `init()` فارغ + `<clinit>` لا يرمي أبداً) — تُحقن في **جذر الجار** (أولوية-الأب لـ URLClassLoader الخاص بـ ElectricLauncher) **وفي الأوفيرلاي المدمج** (أولوية `cached` في AugustusClassLoader الذي لا يفوّض للأب) |
+| خطافات JNIC | `$jnicLoader` (و`$jnicClinit` النيتفية فقط) تُحوّل لجسم فارغ عبر ASM (`android/PatchJnic.java`) في: `launcher/41/44p/46e/46z` + `net/40U/47R3/47Ua/47Uj/47bj`. `$jnicClinit` ذات الجسم الجافا (تهيئة ZKM/DES في 41 وController و47Ua) تعمل كما هي |
+| JavaFX | 18 marker stub فارغ لأنواع Controller (واجهة + كلاسات) — **لا** يُحقن `javafx.scene.media.*` (كاشف الموسيقى `net/47TB` يتحقق من الغياب ويعطّل بأمان) |
+| مُقلع اللعبة | `net.47Uj.main` تُستبدل بتشخيص صريح (`PatchJnic.DIAG_MESSAGE`) بدل `UnsatisfiedLinkError` غامض |
+| بوابات التغليف | فحص bytecode بعد الترقيع: `$jnicLoader/$jnicClinit` لم يعدا native، الـ stubs موجودة في الجذر والأوفيرلاي |
+
+### الاختبارات المنفذة فعلياً (أدلة)
+
+- **تشغيل كامل محلياً (لينكس x86_64 + Temurin JDK 8u422)**: جار b4.20.3
+  المرقّع بالإصلاحات يقصّ `nick.Augustus.main` كاملة: تهيئة `launcher.41` ✓
+  (كانت الكراش)، جلسة `4v` + التوكنات ✓، إنشاء `Controller` ✓ (JavaFX
+  stubs)، محمّل `444` ✓، `AugustusClassLoader` + أوفيرلاي 5,206 ✓،
+  المفاتيح ✓، كتابة resources.jar ✓، `Libraries.create()` ✓، وصولاً إلى
+  `net.47Uj.main` — حيث يتوقف عند الجدار الموثق بدل الانهيار الغامض.
+- **بروب CI الجديد (المرحلة 2)**: `android/ProbeAugustus.java` يشغّل
+  `nick.Augustus.main` نفسه على JVM 8 بدون شاشة ويتحقق أن السبب الجذري
+  النهائي هو التشخيص الموثق (وليس `UnsatisfiedLinkError`) — أي أن أي
+  تراجع في سلسلة الإقلاع يُمسك تلقائياً في كل بناء.
+- **بوابات التغليف**: 33 فحصاً بنيوياً (المرحلة 1) + فحوص الترقيع كلها PASS.
+
+### ما لم يُنفذ عمداً (وثوقية)
+
+- إعادة هندسة `47Uj/40U/47R3/47Ua/47bj` — خارج نطاق «إصلاح تشغيلي»؛ تتطلب
+  مشروع هندسة عكسية بنتائج غير مضمونة (المنطق غير موجود إلا كـ native).
+- نسخة «لعبة فقط» (إقلاع vanilla من الحمولات بدون طبقة Augustus) — ممكنة
+  نظرياً لكنها تسقط موديولات/HUD العميل (مخالفة لقيد عدم المساس بالموديولات).

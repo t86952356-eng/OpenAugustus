@@ -6,10 +6,11 @@ import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
 
 /**
- * CI smoke test for the OpenAugustus Android build.
+ * CI smoke test for the OpenAugustus Android build (b4.20.4).
  *
- * Reproduces, headlessly and without any LWJGL/display dependency, every data
- * loading step the real device boot performs BEFORE touching OpenGL:
+ * Stage 1 - structural: reproduces, headlessly and without any LWJGL/display
+ * dependency, every data loading step the real device boot performs BEFORE
+ * touching OpenGL:
  *
  *   nick.Augustus.main (device)          this probe
  *   ---------------------------------    ----------------------------------
@@ -24,8 +25,23 @@ import java.util.zip.ZipInputStream;
  *   EmbeddedOverlay.install              overlay parses, all CAFEBABE, count
  *   EditableResources.mergeInto          index entries present at jar root
  *   Libraries.create()                   must skip missing natives silently
+ *   Android safety stubs                 root + overlay (dev.jnic loaders,
+ *                                        javafx markers)
  *
- * Exit code 0 + "PROBE-PASSED" = the Android jar is structurally sound.
+ * Stage 2 - launcher chain (NEW in b4.20.4): runs nick.Augustus.main itself -
+ * the EXACT device boot path - on a headless linux JVM. Before the b4.20.4
+ * fixes this died instantly inside launcher.41.<clinit> with
+ * UnsatisfiedLinkError("Platform not supported: linux/aarch64") (the JNIC
+ * runtime ships a Windows-x64-only payload). With the fixes, the whole
+ * launcher bootstrap must succeed - session handshake (launcher.4v),
+ * launcher.Controller instantiation (JavaFX marker stubs), the delegate
+ * loader (launcher.444), AugustusClassLoader + overlay install, key setup
+ * and the resources.jar write - until the boot reaches the documented
+ * native wall inside net.47Uj.main (the JNIC-protected game bootstrap),
+ * which b4.20.4 replaces with an explicit diagnostic.
+ *
+ * Exit code 0 + "PROBE-PASSED" = the Android jar is structurally sound and
+ * the launcher chain boots to the documented boundary.
  */
 public final class ProbeAugustus {
 
@@ -56,8 +72,6 @@ public final class ProbeAugustus {
         check(classes != null, "Data.classes() returned a map");
         if (classes == null) throw exit();
         check(classes.size() >= 30000, "classes.bin entries >= 30000 (got " + classes.size() + ")");
-        // classes.bin mixes plain class data with ~7k original encrypted payloads
-        // (SHA-named entries); both are expected - spot-check known library classes.
         byte[] netty = classes.get("io/netty/channel/Channel.class");
         byte[] fastutil = classes.get("it/unimi/dsi/fastutil/ints/Int2ObjectOpenHashMap.class");
         check(netty != null && netty.length > 8 && netty[0] == (byte) 0xca && netty[1] == (byte) 0xfe,
@@ -69,7 +83,6 @@ public final class ProbeAugustus {
         Map<String, byte[]> resources = nick.Data.resources();
         check(resources != null, "Data.resources() returned a map");
         if (resources == null) throw exit();
-        // stripped resources.jar keeps 4731 + 1008 editable merged = 5739
         check(resources.size() == 5739,
                 "resources map has 5739 entries (got " + resources.size() + ")");
         check(resources.containsKey("assets/augustus/alan/portrait.png"),
@@ -79,7 +92,6 @@ public final class ProbeAugustus {
         byte[] sound = resources.get("assets/augustus/sounds/click/click1.ogg");
         boolean soundOk = false;
         if (sound == null) {
-            // fall back to any augustus sound entry (names vary)
             for (Map.Entry<String, byte[]> e : resources.entrySet()) {
                 if (e.getKey().startsWith("assets/augustus/sounds/") && e.getValue().length > 1000) {
                     soundOk = true;
@@ -121,7 +133,6 @@ public final class ProbeAugustus {
         check(overlayCount >= 5000, "overlay has >= 5000 classes (got " + overlayCount + ")");
         check(allMagic, "every overlay entry is valid class data");
 
-        // every cache key must resolve via cache (dotted keys) or overlay (slash keys)
         boolean allCovered = true;
         for (String key : new String[]{"net/47bX", "net/40U", "net/47uz"}) {
             boolean resolvable = overlayKeys.contains(key) || cache.containsKey(key.replace('/', '.'));
@@ -180,11 +191,49 @@ public final class ProbeAugustus {
                     "all editable resources present at jar root (" + present + "/" + total + ")");
         }
 
+        // --- 10. Android safety stubs (NEW b4.20.4) ---------------------------
+        check(cl.getResourceAsStream("dev/jnic/rNBrJa/JNICLoader.class") != null,
+                "root stub dev/jnic/rNBrJa/JNICLoader.class");
+        check(cl.getResourceAsStream("dev/jnic/aqRLGH/JNICLoader.class") != null,
+                "root stub dev/jnic/aqRLGH/JNICLoader.class");
+        check(cl.getResourceAsStream("javafx/fxml/Initializable.class") != null,
+                "root stub javafx/fxml/Initializable.class");
+        check(overlayKeys.contains("dev/jnic/rNBrJa/JNICLoader")
+                        && overlayKeys.contains("dev/jnic/aqRLGH/JNICLoader"),
+                "JNIC loader stubs injected into the embedded overlay");
+
+        // --- 11. Stage 2: full launcher chain (the exact device boot path) ----
+        System.out.println("== Stage 2: launcher chain (nick.Augustus.main) ==");
+        Throwable wall = null;
+        try {
+            nick.Augustus.main(new String[0]);
+            wall = null;
+        } catch (Throwable t) {
+            wall = t;
+        }
+        if (wall == null) {
+            check(false, "Augustus.main must stop at the documented native wall");
+        } else {
+            Throwable root = wall;
+            while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+            String msg = String.valueOf(root.getMessage());
+            boolean isDiag = root instanceof RuntimeException
+                    && msg.contains("OpenAugustus/Android")
+                    && msg.contains("net.47Uj");
+            check(isDiag, "boot reached the documented native wall (root cause: "
+                    + root.getClass().getSimpleName() + ": "
+                    + msg.substring(0, Math.min(90, msg.length())) + "...)");
+            check(!(root instanceof UnsatisfiedLinkError),
+                    "no UnsatisfiedLinkError anywhere in the launcher chain "
+                            + "(the b4.20.3 device crash is fixed)");
+        }
+
         if (failures > 0) {
             System.err.println("PROBE-FAILED: " + failures + " check(s) failed");
             System.exit(1);
         }
-        System.out.println("PROBE-PASSED: Android jar is structurally sound");
+        System.out.println("PROBE-PASSED: Android jar is structurally sound; "
+                + "launcher chain boots to the documented boundary");
     }
 
     private static RuntimeException exit() {
